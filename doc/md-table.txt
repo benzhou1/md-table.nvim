@@ -1,0 +1,120 @@
+*md-table.txt*  Read prose-heavy Markdown tables at the current window width.
+
+COMMANDS                                                        *md-table*
+
+:MdTable                  Open the table under the cursor. Outside a table,
+                          choose one from the buffer. Reads unsaved text too.
+
+The reader is a read-only snapshot in a separate `mdtable` scratch buffer.
+Short columns retain their natural widths; prose shares the remaining space.
+Column headers stay visible. Each cell starts with three wrapped lines and an
+ellipsis for omitted text. Narrow windows automatically use full-width row view.
+The source window must be at least 22 columns wide and 10 lines tall.
+
+KEYS                                                       *md-table-keys*
+
+j / k, Down / Up          Next / previous record. Counts such as 3j work.
+h / l, Shift-Tab / Tab    Select previous / next column.
+<Enter>                   Expand / collapse the current row.
+w                         Toggle unrestricted wrapping for all rows.
+c                         Toggle one-line cutoff for the selected column.
+x                         Hide selected column; at least one remains visible.
+u                         Choose a hidden column to restore.
+a                         Show every column.
+f                         Show selected column alongside the first column.
+v                         Switch between table and full-width row view.
+R                         Reset visibility, cutoffs, expansions and view mode.
+y                         Yank the full source cell. Named registers work: "ay.
+g                         Close and jump to the exact source cell for editing.
+<C-d> / <C-u>             Scroll long rows or fields.
+/ / n / N                 Native search over rendered text.
+?                         Show the key reference.
+q / <Esc>                 Close the reader.
+
+Expanded rows override column cutoffs. Row view never truncates visible fields.
+Search covers rendered text: use a then w to expose all table text. In row view,
+search covers the current record. Layout choices last for one reader session.
+Reopen after editing the source; stale source jumps are refused. The reader never
+changes Markdown, its modified flag, or its undo history.
+
+INSTALLATION                                            *md-table-install*
+
+Requires Neovim 0.10+. No plugin dependencies or Treesitter parser required.
+The command is registered by plugin/md-table.lua; setup() is optional.
+
+Lazy: >lua
+    { "freeo/md-table.nvim", cmd = "MdTable",
+      keys = { { "<leader>mt", "<cmd>MdTable<cr>", desc = "Read table" } } }
+<
+Neovim 0.12+ native package manager, in init.lua: >lua
+    vim.pack.add({ "https://github.com/freeo/md-table.nvim" })
+    vim.keymap.set("n", "<leader>mt", "<cmd>MdTable<cr>")
+<
+Traditional native packages (also works on 0.10 and 0.11), default Linux/macOS
+data path; substitute stdpath("data") if customized: >sh
+    git clone https://github.com/freeo/md-table.nvim \
+      ~/.local/share/nvim/site/pack/plugins/start/md-table.nvim
+<
+Restart Neovim. Optional packages under pack/plugins/opt instead use :packadd
+md-table.nvim. For traditional packages, generate help tags once: >vim
+    :helptags ALL
+<
+HIGHLIGHTS                                           *md-table-highlights*
+
+Every group has a default link. Define groups in your colorscheme, or override
+them in a ColorScheme autocmd. setup() and colorscheme refreshes respect existing
+definitions. No plugin-specific theme options are needed.
+
+Group                     Default link    Used for
+MdTableNormal             NormalFloat     Reader text and background
+MdTableBorder             FloatBorder     Floating window borders
+MdTableTitle              FloatTitle      Window title
+MdTableSummary            Comment         Row/column summary and footer
+MdTableHeader             Title           Column headers
+MdTableHeaderActive       IncSearch       Selected column header
+MdTableSeparator          FloatBorder     Horizontal and vertical table rules
+MdTableRow                CursorLine      Current record background
+MdTableCell               Visual          Current cell
+MdTableLabel              Title           Field labels in row view
+MdTableTruncated          NonText         Ellipsis markers
+
+Example colorscheme definitions: >lua
+    vim.api.nvim_set_hl(0, "MdTableCell", { fg = "#e8e0db", bg = "#274670" })
+    vim.api.nvim_set_hl(0, "MdTableSeparator", { fg = "#707070" })
+<
+OTHER MARKDOWN PLUGINS                                *md-table-rendering*
+
+render-markdown.nvim renders the source Markdown buffer with extmarks and
+concealment. md-table reads original buffer lines and creates its own display in
+a `mdtable` scratch buffer. Decorations from the source renderer are not copied.
+Leave `mdtable` out of render-markdown.nvim's file_types; keep its ordinary
+Markdown rendering enabled. No global wrap, conceal, renderer options or source
+text are changed. Inline Markdown remains visible in the reader.
+
+Supports standalone pipe tables with optional outer pipes, alignment markers,
+escaped pipes (including code spans), empty cells, Unicode and <br> line breaks.
+Missing body cells are empty; excess cells are ignored in the view. Fenced and
+indented code samples are skipped. This is not a full Markdown parser: nested
+list/blockquote tables, HTML block context and body rows without a pipe are out
+of scope. Prose is left-aligned in the reading view. All rows are rendered in
+memory; the plugin targets wide prose tables, not spreadsheet-scale datasets.
+
+DEVELOPMENT                                                *md-table-dev*
+
+From the repository root: >sh
+    nvim --headless -u NONE -i NONE -n -c 'luafile tests/run.lua'
+<
+Record actual Neovim output using asciinema 3.x, then render with agg: >sh
+    TERM=xterm-256color NVIM_NOTTYFAST=1 \
+      asciinema rec --headless --window-size 110x32 \
+      --output-format asciicast-v2 \
+      --return -c 'nvim -u NONE -i NONE -n -c "luafile scripts/demo.lua"' \
+      assets/demo.cast
+    agg --font-size 16 --last-frame-duration 2 assets/demo.cast assets/demo.gif
+<
+The scripted demo uses only the synthetic examples/demo.md fixture. Set
+MD_TABLE_THEME_ROOT to a Neovim config containing kalisi-modern to record with
+that local colorscheme; otherwise the demo uses Neovim's built-in default theme.
+asciinema and agg are development tools, not runtime dependencies.
+
+vim:tw=78:ts=8:noet:ft=help:norl:

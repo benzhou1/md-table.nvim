@@ -1,0 +1,6 @@
+# Original user fixture remains local; the release uses synthetic examples.
+/example-table.md
+/doc/tags
+*.swp
+*.swo
+/nvim.log
