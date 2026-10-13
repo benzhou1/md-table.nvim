@@ -68,7 +68,7 @@ local function close(s)
   if s.group then
     api.nvim_del_augroup_by_id(s.group)
   end
-  for _, win in ipairs({ s.win, s.header_win }) do
+  for _, win in ipairs({ s.win, s.header_win, s.edit_win }) do
     if api.nvim_win_is_valid(win) then
       api.nvim_win_close(win, true)
     end
@@ -270,6 +270,25 @@ local function resize(s)
   render(s)
 end
 
+local function apply_edit(s, lines)
+  local t, buf = s.t, s.source_buf
+  if not api.nvim_buf_is_valid(buf) or api.nvim_buf_get_changedtick(buf) ~= s.tick then
+    notify("Source changed. Close and reopen the reader before editing.")
+    return
+  end
+  local value = vim.trim(table.concat(lines, "<br>")):gsub("|", "\\|")
+  t.rows[s.row].cells[s.col] = value
+  local old = api.nvim_buf_get_lines(buf, t.start - 1, t.finish, false)
+  api.nvim_buf_set_lines(buf, t.start - 1, t.finish, false, data.format(t, old))
+  for _, new in ipairs(data.parse(api.nvim_buf_get_lines(buf, 0, -1, false))) do
+    if new.start == t.start then
+      t.headers, t.rows, t.finish = new.headers, new.rows, new.finish
+    end
+  end
+  s.tick = api.nvim_buf_get_changedtick(buf)
+  render(s)
+end
+
 local function show(t, source_buf, source_win)
   if active then
     close(active)
@@ -293,6 +312,7 @@ local function show(t, source_buf, source_win)
     hidden = {},
     cut = {},
     expanded = {},
+    full = config.auto_expand == true,
     buf = scratch(),
     header_buf = scratch(),
     width = width,
@@ -420,7 +440,7 @@ local function show(t, source_buf, source_win)
     render(s)
   end
   function actions.reset()
-    s.hidden, s.cut, s.expanded, s.full, s.mode = {}, {}, {}, false, "table"
+    s.hidden, s.cut, s.expanded, s.full, s.mode = {}, {}, {}, config.auto_expand == true, "table"
     render(s)
   end
   function actions.yank()
@@ -445,6 +465,54 @@ local function show(t, source_buf, source_win)
       api.nvim_win_set_cursor(source_win, { row and row.line or t.start, row and row.starts[s.col] or 0 })
     end
   end
+  function actions.edit_cell()
+    if not t.rows[s.row] then
+      notify("This table has no data rows.")
+      return
+    end
+    if s.edit_win and api.nvim_win_is_valid(s.edit_win) then
+      api.nvim_set_current_win(s.edit_win)
+      return
+    end
+    local ebuf = scratch()
+    vim.bo[ebuf].buftype = "acwrite"
+    api.nvim_buf_set_name(ebuf, "md-table://cell/" .. ebuf)
+    local text = vim.split(data.text(t.rows[s.row].cells[s.col]), "\n", { plain = true })
+    api.nvim_buf_set_lines(ebuf, 0, -1, false, text)
+    vim.bo[ebuf].modified = false
+    local ewin = window(ebuf, true, {
+      win = s.win,
+      row = 2,
+      col = 2,
+      width = s.width - 4,
+      height = math.max(1, math.min(8, s.height - 2)),
+      title = " Edit: " .. t.headers[s.col] .. " ",
+      title_pos = "center",
+      footer = " <CR>/:w save · q cancel ",
+      footer_pos = "center",
+    })
+    s.edit_win = ewin
+    vim.wo[ewin].wrap = true
+    local function finish()
+      if api.nvim_win_is_valid(ewin) then
+        api.nvim_win_close(ewin, true)
+      end
+      if api.nvim_win_is_valid(s.win) then
+        api.nvim_set_current_win(s.win)
+      end
+    end
+    api.nvim_create_autocmd("BufWriteCmd", {
+      buffer = ebuf,
+      callback = function()
+        apply_edit(s, api.nvim_buf_get_lines(ebuf, 0, -1, false))
+        vim.bo[ebuf].modified = false
+        vim.schedule(finish)
+      end,
+    })
+    local opts = { buffer = ebuf, silent = true, nowait = true }
+    vim.keymap.set("n", "q", finish, vim.tbl_extend("force", opts, { desc = "Cancel cell edit" }))
+    vim.keymap.set("n", "<CR>", "<cmd>write<cr>", vim.tbl_extend("force", opts, { desc = "Save cell edit" }))
+  end
   function actions.help()
     vim.ui.select({
       "j/k: next/previous row (counts work); h/l or Tab: select column",
@@ -454,7 +522,8 @@ local function show(t, source_buf, source_win)
       "v: full-width row reader; Ctrl-d/Ctrl-u: scroll long content",
       "/: search visible text; use w or v to expose truncated text first",
       "y: yank complete source cell (registers supported); g: jump to source",
-      "q/Esc: close; source is never modified; reopen to refresh",
+      "e: edit selected cell (Enter or :w saves to source buffer, q cancels)",
+      "q/Esc: close; reopen to refresh",
     }, { prompt = "md-table · keys" }, function() end)
   end
   map({ "q", "<Esc>" }, "Close table reader", actions.close)
@@ -473,6 +542,7 @@ local function show(t, source_buf, source_win)
   map("R", "Reset table layout", actions.reset)
   map("y", "Yank the complete source cell", actions.yank)
   map("g", "Go to this cell in the Markdown source", actions.goto_source)
+  map("e", "Edit this cell", actions.edit_cell)
   map("?", "Table reader help", actions.help)
   if config.on_attach then
     config.on_attach(s.buf, actions)

@@ -163,4 +163,32 @@ function M.widths(t, visible, width)
   return widths
 end
 
+-- Rebuild the table as aligned pipe-table lines, keeping indent and alignment markers.
+function M.format(t, source_lines)
+  local indent = source_lines[1]:match("^%s*")
+  local aligns = M.cells(source_lines[2])
+  local widths, divider = {}, {}
+  for col, header in ipairs(t.headers) do
+    widths[col] = math.max(3, display(header))
+    for _, row in ipairs(t.rows) do
+      widths[col] = math.max(widths[col], display(row.cells[col]))
+    end
+    local left = aligns[col]:sub(1, 1) == ":" and ":" or "-"
+    local right = aligns[col]:sub(-1) == ":" and ":" or "-"
+    divider[col] = left .. string.rep("-", widths[col] - 2) .. right
+  end
+  local function line(cells)
+    local parts = {}
+    for col, width in ipairs(widths) do
+      parts[col] = cells[col] .. string.rep(" ", width - display(cells[col]))
+    end
+    return indent .. "| " .. table.concat(parts, " | ") .. " |"
+  end
+  local lines = { line(t.headers), line(divider) }
+  for _, row in ipairs(t.rows) do
+    lines[#lines + 1] = line(row.cells)
+  end
+  return lines
+end
+
 return M
