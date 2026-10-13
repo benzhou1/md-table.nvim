@@ -341,10 +341,11 @@ local function travel(s, from, to, empty)
   end
 end
 
-local function apply_edit(s, lines)
+local function apply_edit(s, lines, header)
   local value = vim.trim(table.concat(lines, "<br>")):gsub("|", "\\|")
   rewrite(s, function(t)
-    t.rows[s.row].cells[s.col] = value
+    local list = header and t.headers or t.rows[s.row].cells
+    list[s.col] = value
   end)
 end
 
@@ -596,8 +597,8 @@ local function show(t, source_buf, source_win)
       api.nvim_win_set_cursor(source_win, { row and row.line or t.start, row and row.starts[s.col] or 0 })
     end
   end
-  function actions.edit_cell()
-    if not t.rows[s.row] then
+  local function edit(header)
+    if not header and not t.rows[s.row] then
       notify("This table has no data rows.")
       return
     end
@@ -607,8 +608,9 @@ local function show(t, source_buf, source_win)
     end
     local ebuf = scratch()
     vim.bo[ebuf].buftype = "acwrite"
-    api.nvim_buf_set_name(ebuf, "md-table://cell/" .. ebuf)
-    local text = vim.split(data.text(t.rows[s.row].cells[s.col]), "\n", { plain = true })
+    api.nvim_buf_set_name(ebuf, "md-table://" .. (header and "header/" or "cell/") .. ebuf)
+    local raw = header and t.headers[s.col] or t.rows[s.row].cells[s.col]
+    local text = vim.split(data.text(raw), "\n", { plain = true })
     api.nvim_buf_set_lines(ebuf, 0, -1, false, text)
     vim.bo[ebuf].modified = false
     local ewin = window(ebuf, true, {
@@ -617,7 +619,7 @@ local function show(t, source_buf, source_win)
       col = 2,
       width = s.width - 4,
       height = math.max(1, math.min(8, s.height - 2)),
-      title = " Edit: " .. t.headers[s.col] .. " ",
+      title = header and " Edit header " or " Edit: " .. t.headers[s.col] .. " ",
       title_pos = "center",
       footer = " <CR>/:w save · q cancel ",
       footer_pos = "center",
@@ -635,7 +637,7 @@ local function show(t, source_buf, source_win)
     api.nvim_create_autocmd("BufWriteCmd", {
       buffer = ebuf,
       callback = function()
-        apply_edit(s, api.nvim_buf_get_lines(ebuf, 0, -1, false))
+        apply_edit(s, api.nvim_buf_get_lines(ebuf, 0, -1, false), header)
         vim.bo[ebuf].modified = false
         vim.schedule(finish)
       end,
@@ -643,6 +645,12 @@ local function show(t, source_buf, source_win)
     local opts = { buffer = ebuf, silent = true, nowait = true }
     vim.keymap.set("n", "q", finish, vim.tbl_extend("force", opts, { desc = "Cancel cell edit" }))
     vim.keymap.set("n", "<CR>", "<cmd>write<cr>", vim.tbl_extend("force", opts, { desc = "Save cell edit" }))
+  end
+  function actions.edit_cell()
+    edit(false)
+  end
+  function actions.edit_header()
+    edit(true)
   end
   function actions.insert_row_below()
     insert_row(s, s.row + 1)
@@ -685,7 +693,7 @@ local function show(t, source_buf, source_win)
       "v: full-width row reader; Ctrl-d/Ctrl-u: scroll long content",
       "/: search visible text; use w or v to expose truncated text first",
       "y: yank complete source cell (registers supported); g: jump to source",
-      "e: edit selected cell (Enter or :w saves to source buffer, q cancels)",
+      "e: edit selected cell; E: edit column header (Enter or :w saves to source buffer, q cancels)",
       "q/Esc: close; reopen to refresh",
     }, { prompt = "md-table · keys" }, function() end)
   end
@@ -716,6 +724,7 @@ local function show(t, source_buf, source_win)
   map("y", "Yank the complete source cell", actions.yank)
   map("g", "Go to this cell in the Markdown source", actions.goto_source)
   map("e", "Edit this cell", actions.edit_cell)
+  map("E", "Edit this column's header", actions.edit_header)
   map("?", "Table reader help", actions.help)
   if config.on_attach then
     config.on_attach(s.buf, actions)
