@@ -3,9 +3,6 @@ local display = vim.fn.strdisplaywidth
 
 -- Pipes inside code spans still need escaping in GFM tables.
 function M.cells(line)
-  if line:match("^    ") or line:match("^\t") then
-    return nil
-  end
   local cells, starts, first, slashes, pipes = {}, {}, 1, 0, 0
   local function push(last)
     local raw = line:sub(first, last)
