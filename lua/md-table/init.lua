@@ -270,23 +270,62 @@ local function resize(s)
   render(s)
 end
 
-local function apply_edit(s, lines)
+-- Apply `change(t)` to the parsed table, then rewrite its lines in the source buffer.
+local function rewrite(s, change)
   local t, buf = s.t, s.source_buf
   if not api.nvim_buf_is_valid(buf) or api.nvim_buf_get_changedtick(buf) ~= s.tick then
     notify("Source changed. Close and reopen the reader before editing.")
     return
   end
-  local value = vim.trim(table.concat(lines, "<br>")):gsub("|", "\\|")
-  t.rows[s.row].cells[s.col] = value
   local old = api.nvim_buf_get_lines(buf, t.start - 1, t.finish, false)
+  change(t)
   api.nvim_buf_set_lines(buf, t.start - 1, t.finish, false, data.format(t, old))
   for _, new in ipairs(data.parse(api.nvim_buf_get_lines(buf, 0, -1, false))) do
     if new.start == t.start then
-      t.headers, t.rows, t.finish = new.headers, new.rows, new.finish
+      t.headers, t.aligns, t.rows, t.finish = new.headers, new.aligns, new.rows, new.finish
     end
   end
   s.tick = api.nvim_buf_get_changedtick(buf)
   render(s)
+end
+
+local function apply_edit(s, lines)
+  local value = vim.trim(table.concat(lines, "<br>")):gsub("|", "\\|")
+  rewrite(s, function(t)
+    t.rows[s.row].cells[s.col] = value
+  end)
+end
+
+-- Move index-keyed entries at or after `from` up by one.
+local function shift(map, from)
+  local moved = {}
+  for index, value in pairs(map) do
+    moved[index >= from and index + 1 or index] = value
+  end
+  return moved
+end
+
+local function insert_row(s, at)
+  at = math.min(at, #s.t.rows + 1)
+  rewrite(s, function(t)
+    local cells = {}
+    for col = 1, #t.headers do
+      cells[col] = ""
+    end
+    table.insert(t.rows, at, { cells = cells })
+    s.expanded, s.row = shift(s.expanded, at), at
+  end)
+end
+
+local function insert_col(s, at)
+  rewrite(s, function(t)
+    table.insert(t.headers, at, "")
+    table.insert(t.aligns, at, "---")
+    for _, row in ipairs(t.rows) do
+      table.insert(row.cells, at, "")
+    end
+    s.hidden, s.cut, s.col = shift(s.hidden, at), shift(s.cut, at), at
+  end)
 end
 
 local function show(t, source_buf, source_win)
@@ -513,12 +552,31 @@ local function show(t, source_buf, source_win)
     vim.keymap.set("n", "q", finish, vim.tbl_extend("force", opts, { desc = "Cancel cell edit" }))
     vim.keymap.set("n", "<CR>", "<cmd>write<cr>", vim.tbl_extend("force", opts, { desc = "Save cell edit" }))
   end
+  function actions.insert_row_below()
+    insert_row(s, s.row + 1)
+  end
+  function actions.insert_row_above()
+    insert_row(s, s.row)
+  end
+  function actions.insert_col_before()
+    insert_col(s, s.col)
+  end
+  function actions.insert_col_after()
+    insert_col(s, s.col + 1)
+  end
+  function actions.insert_col_start()
+    insert_col(s, 1)
+  end
+  function actions.insert_col_end()
+    insert_col(s, #t.headers + 1)
+  end
   function actions.help()
     vim.ui.select({
       "j/k: next/previous row (counts work); h/l or Tab: select column",
       "Enter: expand/collapse selected row; w: full wrap for all rows",
       "c: one-line cutoff for selected column; x: hide column; u: restore column",
-      "f: focus selected + first column; a: show all columns; R: reset layout",
+      "f: focus selected + first column; U: show all columns; R: reset layout",
+      "o/O: insert row below/above; i/a/I/A: insert column before/after/at start/at end",
       "v: full-width row reader; Ctrl-d/Ctrl-u: scroll long content",
       "/: search visible text; use w or v to expose truncated text first",
       "y: yank complete source cell (registers supported); g: jump to source",
@@ -538,7 +596,13 @@ local function show(t, source_buf, source_win)
   map("x", "Hide this column", actions.hide_col)
   map("u", "Restore a hidden column", actions.restore_col)
   map("f", "Focus this column alongside the first column", actions.focus_col)
-  map("a", "Show all columns", actions.show_all)
+  map("U", "Show all columns", actions.show_all)
+  map("o", "Insert row below", actions.insert_row_below)
+  map("O", "Insert row above", actions.insert_row_above)
+  map("i", "Insert column before", actions.insert_col_before)
+  map("a", "Insert column after", actions.insert_col_after)
+  map("I", "Insert column at start", actions.insert_col_start)
+  map("A", "Insert column at end", actions.insert_col_end)
   map("R", "Reset table layout", actions.reset)
   map("y", "Yank the complete source cell", actions.yank)
   map("g", "Go to this cell in the Markdown source", actions.goto_source)

@@ -54,7 +54,7 @@ function M.parse(lines)
         valid = valid and cell:match("^:?-+:?$") ~= nil
       end
       if valid then
-        local t = { headers = headers, rows = {}, start = i, finish = i + 1 }
+        local t = { headers = headers, aligns = separators, rows = {}, start = i, finish = i + 1 }
         i = i + 2
         while i <= #lines do
           local cells, starts = M.cells(lines[i])
@@ -166,15 +166,15 @@ end
 -- Rebuild the table as aligned pipe-table lines, keeping indent and alignment markers.
 function M.format(t, source_lines)
   local indent = source_lines[1]:match("^%s*")
-  local aligns = M.cells(source_lines[2])
   local widths, divider = {}, {}
   for col, header in ipairs(t.headers) do
     widths[col] = math.max(3, display(header))
     for _, row in ipairs(t.rows) do
       widths[col] = math.max(widths[col], display(row.cells[col]))
     end
-    local left = aligns[col]:sub(1, 1) == ":" and ":" or "-"
-    local right = aligns[col]:sub(-1) == ":" and ":" or "-"
+    local align = t.aligns[col] or "---"
+    local left = align:sub(1, 1) == ":" and ":" or "-"
+    local right = align:sub(-1) == ":" and ":" or "-"
     divider[col] = left .. string.rep("-", widths[col] - 2) .. right
   end
   local function line(cells)
