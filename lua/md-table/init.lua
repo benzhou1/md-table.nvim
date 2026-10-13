@@ -3,6 +3,7 @@ local api = vim.api
 local data = require("md-table.data")
 local ns = api.nvim_create_namespace("md-table")
 local active
+local config = {}
 
 local function highlights()
   for group, link in pairs({
@@ -347,44 +348,45 @@ local function show(t, source_buf, source_win)
     s.col = s.visible[(index - 1 + delta) % #s.visible + 1]
     render(s)
   end
-  map({ "q", "<Esc>" }, "Close table reader", function()
+  local actions = {}
+  function actions.close()
     close(s)
-  end)
-  map({ "j", "<Down>" }, "Next row", function()
+  end
+  function actions.next_row()
     move_row(1)
-  end)
-  map({ "k", "<Up>" }, "Previous row", function()
+  end
+  function actions.prev_row()
     move_row(-1)
-  end)
-  map({ "h", "<Left>", "<S-Tab>" }, "Previous column", function()
+  end
+  function actions.prev_col()
     move_col(-1)
-  end)
-  map({ "l", "<Right>", "<Tab>" }, "Next column", function()
+  end
+  function actions.next_col()
     move_col(1)
-  end)
-  map("v", "Toggle full-width row reader", function()
+  end
+  function actions.toggle_row_mode()
     s.mode = s.mode == "row" and "table" or "row"
     render(s)
-  end)
-  map("<CR>", "Expand/collapse this row", function()
+  end
+  function actions.toggle_expand()
     s.expanded[s.row] = not s.expanded[s.row]
     render(s)
-  end)
-  map("w", "Toggle full wrapping for all rows", function()
+  end
+  function actions.toggle_wrap()
     s.full = not s.full
     render(s)
-  end)
-  map("c", "Toggle one-line cutoff for this column", function()
+  end
+  function actions.toggle_cut()
     s.cut[s.col] = not s.cut[s.col]
     render(s)
-  end)
-  map("x", "Hide this column", function()
+  end
+  function actions.hide_col()
     if #s.visible > 1 then
       s.hidden[s.col] = true
       render(s)
     end
-  end)
-  map("u", "Restore a hidden column", function()
+  end
+  function actions.restore_col()
     local hidden = {}
     for col = 1, #t.headers do
       if s.hidden[col] then
@@ -406,28 +408,28 @@ local function show(t, source_buf, source_win)
         render(s)
       end
     end)
-  end)
-  map("f", "Focus this column alongside the first column", function()
+  end
+  function actions.focus_col()
     for col = 1, #t.headers do
       s.hidden[col] = col ~= 1 and col ~= s.col
     end
     render(s)
-  end)
-  map("a", "Show all columns", function()
+  end
+  function actions.show_all()
     s.hidden = {}
     render(s)
-  end)
-  map("R", "Reset table layout", function()
+  end
+  function actions.reset()
     s.hidden, s.cut, s.expanded, s.full, s.mode = {}, {}, {}, false, "table"
     render(s)
-  end)
-  map("y", "Yank the complete source cell", function()
+  end
+  function actions.yank()
     if t.rows[s.row] then
       vim.fn.setreg(vim.v.register, t.rows[s.row].cells[s.col])
       notify("Copied complete cell: " .. t.headers[s.col])
     end
-  end)
-  map("g", "Go to this cell in the Markdown source", function()
+  end
+  function actions.goto_source()
     if
       not api.nvim_win_is_valid(source_win)
       or api.nvim_win_get_buf(source_win) ~= source_buf
@@ -442,8 +444,8 @@ local function show(t, source_buf, source_win)
       api.nvim_set_current_win(source_win)
       api.nvim_win_set_cursor(source_win, { row and row.line or t.start, row and row.starts[s.col] or 0 })
     end
-  end)
-  map("?", "Table reader help", function()
+  end
+  function actions.help()
     vim.ui.select({
       "j/k: next/previous row (counts work); h/l or Tab: select column",
       "Enter: expand/collapse selected row; w: full wrap for all rows",
@@ -454,7 +456,27 @@ local function show(t, source_buf, source_win)
       "y: yank complete source cell (registers supported); g: jump to source",
       "q/Esc: close; source is never modified; reopen to refresh",
     }, { prompt = "md-table · keys" }, function() end)
-  end)
+  end
+  map({ "q", "<Esc>" }, "Close table reader", actions.close)
+  map({ "j", "<Down>" }, "Next row", actions.next_row)
+  map({ "k", "<Up>" }, "Previous row", actions.prev_row)
+  map({ "h", "<Left>", "<S-Tab>" }, "Previous column", actions.prev_col)
+  map({ "l", "<Right>", "<Tab>" }, "Next column", actions.next_col)
+  map("v", "Toggle full-width row reader", actions.toggle_row_mode)
+  map("<CR>", "Expand/collapse this row", actions.toggle_expand)
+  map("w", "Toggle full wrapping for all rows", actions.toggle_wrap)
+  map("c", "Toggle one-line cutoff for this column", actions.toggle_cut)
+  map("x", "Hide this column", actions.hide_col)
+  map("u", "Restore a hidden column", actions.restore_col)
+  map("f", "Focus this column alongside the first column", actions.focus_col)
+  map("a", "Show all columns", actions.show_all)
+  map("R", "Reset table layout", actions.reset)
+  map("y", "Yank the complete source cell", actions.yank)
+  map("g", "Go to this cell in the Markdown source", actions.goto_source)
+  map("?", "Table reader help", actions.help)
+  if config.on_attach then
+    config.on_attach(s.buf, actions)
+  end
   s.group = api.nvim_create_augroup("MdTableReader" .. s.buf, { clear = true })
   api.nvim_create_autocmd("CursorMoved", {
     group = s.group,
@@ -530,7 +552,8 @@ function M.open()
   end
 end
 
-function M.setup()
+function M.setup(opts)
+  config = opts or {}
   highlights()
   api.nvim_create_autocmd("ColorScheme", {
     group = api.nvim_create_augroup("MdTableHighlights", { clear = true }),
