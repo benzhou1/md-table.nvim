@@ -271,7 +271,8 @@ local function resize(s)
 end
 
 -- Apply `change(t)` to the parsed table, then rewrite its lines in the source buffer.
-local function rewrite(s, change)
+-- Returns true when written, nil when refused because the source changed.
+local function write(s, change)
   local t, buf = s.t, s.source_buf
   if not api.nvim_buf_is_valid(buf) or api.nvim_buf_get_changedtick(buf) ~= s.tick then
     notify("Source changed. Close and reopen the reader before editing.")
@@ -287,6 +288,57 @@ local function rewrite(s, change)
   end
   s.tick = api.nvim_buf_get_changedtick(buf)
   render(s)
+  return true
+end
+
+local function snapshot(s)
+  local rows = {}
+  for index, row in ipairs(s.t.rows) do
+    rows[index] = vim.deepcopy(row.cells)
+  end
+  return {
+    headers = vim.deepcopy(s.t.headers),
+    aligns = vim.deepcopy(s.t.aligns),
+    rows = rows,
+    row = s.row,
+    col = s.col,
+    hidden = vim.deepcopy(s.hidden),
+    cut = vim.deepcopy(s.cut),
+    expanded = vim.deepcopy(s.expanded),
+  }
+end
+
+local function restore(s, snap)
+  return write(s, function(t)
+    t.headers, t.aligns, t.rows = snap.headers, snap.aligns, {}
+    for index, cells in ipairs(snap.rows) do
+      t.rows[index] = { cells = cells }
+    end
+    s.row, s.col, s.hidden, s.cut, s.expanded = snap.row, snap.col, snap.hidden, snap.cut, snap.expanded
+  end)
+end
+
+-- Like write, but records an undo step.
+local function rewrite(s, change)
+  local before = snapshot(s)
+  if write(s, change) then
+    s.past[#s.past + 1] = before
+    s.future = {}
+  end
+end
+
+local function travel(s, from, to, empty)
+  local snap = table.remove(from)
+  if not snap then
+    notify(empty)
+    return
+  end
+  local now = snapshot(s)
+  if restore(s, snap) then
+    to[#to + 1] = now
+  else
+    from[#from + 1] = snap
+  end
 end
 
 local function apply_edit(s, lines)
@@ -296,11 +348,15 @@ local function apply_edit(s, lines)
   end)
 end
 
--- Move index-keyed entries at or after `from` up by one.
-local function shift(map, from)
+-- Move index-keyed entries after an insert (delta 1) or removal (delta -1) at `at`.
+local function shift(map, at, delta)
   local moved = {}
   for index, value in pairs(map) do
-    moved[index >= from and index + 1 or index] = value
+    if index < at then
+      moved[index] = value
+    elseif delta > 0 or index > at then
+      moved[index + delta] = value
+    end
   end
   return moved
 end
@@ -313,7 +369,7 @@ local function insert_row(s, at)
       cells[col] = ""
     end
     table.insert(t.rows, at, { cells = cells })
-    s.expanded, s.row = shift(s.expanded, at), at
+    s.expanded, s.row = shift(s.expanded, at, 1), at
   end)
 end
 
@@ -324,7 +380,41 @@ local function insert_col(s, at)
     for _, row in ipairs(t.rows) do
       table.insert(row.cells, at, "")
     end
-    s.hidden, s.cut, s.col = shift(s.hidden, at), shift(s.cut, at), at
+    s.hidden, s.cut, s.col = shift(s.hidden, at, 1), shift(s.cut, at, 1), at
+  end)
+end
+
+local function remove_row(s, at)
+  if not s.t.rows[at] then
+    notify("This table has no data rows.")
+    return
+  end
+  rewrite(s, function(t)
+    table.remove(t.rows, at)
+    s.expanded, s.row = shift(s.expanded, at, -1), math.max(1, math.min(at, #t.rows))
+  end)
+end
+
+local function remove_col(s, at)
+  if #s.t.headers == 1 then
+    notify("A table needs at least one column.")
+    return
+  end
+  rewrite(s, function(t)
+    table.remove(t.headers, at)
+    table.remove(t.aligns, at)
+    for _, row in ipairs(t.rows) do
+      table.remove(row.cells, at)
+    end
+    s.hidden, s.cut = shift(s.hidden, at, -1), shift(s.cut, at, -1)
+    s.col = math.min(at, #t.headers)
+    local shown = false
+    for col = 1, #t.headers do
+      shown = shown or not s.hidden[col]
+    end
+    if not shown then
+      s.hidden = {}
+    end
   end)
 end
 
@@ -351,6 +441,8 @@ local function show(t, source_buf, source_win)
     hidden = {},
     cut = {},
     expanded = {},
+    past = {},
+    future = {},
     full = config.auto_expand == true,
     buf = scratch(),
     header_buf = scratch(),
@@ -570,13 +662,26 @@ local function show(t, source_buf, source_win)
   function actions.insert_col_end()
     insert_col(s, #t.headers + 1)
   end
+  function actions.remove_row()
+    remove_row(s, s.row)
+  end
+  function actions.remove_col()
+    remove_col(s, s.col)
+  end
+  function actions.undo()
+    travel(s, s.past, s.future, "Nothing to undo.")
+  end
+  function actions.redo()
+    travel(s, s.future, s.past, "Nothing to redo.")
+  end
   function actions.help()
     vim.ui.select({
       "j/k: next/previous row (counts work); h/l or Tab: select column",
       "Enter: expand/collapse selected row; w: full wrap for all rows",
-      "c: one-line cutoff for selected column; x: hide column; u: restore column",
-      "f: focus selected + first column; U: show all columns; R: reset layout",
+      "c: one-line cutoff for selected column; x: hide column; s: restore column",
+      "f: focus selected + first column; S: show all columns; R: reset layout",
       "o/O: insert row below/above; i/a/I/A: insert column before/after/at start/at end",
+      "dd: delete row; D: delete column; u/Ctrl-r: undo/redo table changes",
       "v: full-width row reader; Ctrl-d/Ctrl-u: scroll long content",
       "/: search visible text; use w or v to expose truncated text first",
       "y: yank complete source cell (registers supported); g: jump to source",
@@ -594,9 +699,13 @@ local function show(t, source_buf, source_win)
   map("w", "Toggle full wrapping for all rows", actions.toggle_wrap)
   map("c", "Toggle one-line cutoff for this column", actions.toggle_cut)
   map("x", "Hide this column", actions.hide_col)
-  map("u", "Restore a hidden column", actions.restore_col)
+  map("s", "Restore a hidden column", actions.restore_col)
   map("f", "Focus this column alongside the first column", actions.focus_col)
-  map("U", "Show all columns", actions.show_all)
+  map("S", "Show all columns", actions.show_all)
+  map("dd", "Remove row", actions.remove_row)
+  map("D", "Remove column", actions.remove_col)
+  map("u", "Undo", actions.undo)
+  map("<C-r>", "Redo", actions.redo)
   map("o", "Insert row below", actions.insert_row_below)
   map("O", "Insert row above", actions.insert_row_above)
   map("i", "Insert column before", actions.insert_col_before)
