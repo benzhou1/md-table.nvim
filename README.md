@@ -34,7 +34,9 @@ visible. Cells start with three-line previews; narrow windows use row view.
 | Keys | Action |
 | --- | --- |
 | `j/k`, `h/l` or `Tab` | Move between rows and columns |
-| `Enter`, `w`, `c` | Expand row, wrap all rows, cut column to one line |
+| `Shift-Enter`, `w`, `c` | Expand row, wrap all rows, cut column to one line (`Shift-Enter` needs a terminal with kitty keyboard / CSI u support) |
+| `<localleader>s` | Sort by the selected column: ascending, descending, off |
+| `Enter` | Save pending edits and sort to the source buffer, after confirming (`y`/`Enter` saves, `q`/`Esc` cancels). Closing discards them |
 | `x`, `u`, `a` | Hide column, restore one, show all |
 | `f`, `v`, `R` | Focus column + first column, row view, reset |
 | `y`, `g` | Copy complete cell, jump to source |

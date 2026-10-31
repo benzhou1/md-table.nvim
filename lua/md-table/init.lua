@@ -80,7 +80,7 @@ local function close(s)
   if s.group then
     api.nvim_del_augroup_by_id(s.group)
   end
-  for _, win in ipairs({ s.win, s.header_win, s.edit_win }) do
+  for _, win in ipairs({ s.confirm_win or -1, s.edit_win or -1, s.win, s.header_win }) do
     if api.nvim_win_is_valid(win) then
       api.nvim_win_close(win, true)
     end
@@ -107,15 +107,36 @@ local function mark(buf, line, start, finish, group)
   api.nvim_buf_set_extmark(buf, ns, line - 1, start, { end_col = finish, hl_group = group, priority = 100 })
 end
 
+local function contents(t)
+  local rows = {}
+  for index, row in ipairs(t.rows) do
+    rows[index] = vim.deepcopy(row.cells)
+  end
+  return { headers = vim.deepcopy(t.headers), aligns = vim.deepcopy(t.aligns), rows = rows }
+end
+
+local function pending(s)
+  return s.sort ~= nil or not vim.deep_equal(contents(s.t), s.base)
+end
+
+local function label(s, col)
+  local text = s.t.headers[col]
+  if s.sort and s.sort.col == col then
+    text = text .. (s.sort.desc and " ▼" or " ▲")
+  end
+  return text
+end
+
 local function header(s)
   local count = #s.t.rows
-  local summary = (" %s · Row %d/%d · %d/%d columns · %s"):format(
+  local summary = (" %s · Row %d/%d · %d/%d columns · %s%s"):format(
     s.cards and "ROW" or "TABLE",
     count == 0 and 0 or s.row,
     count,
     #s.visible,
     #s.t.headers,
-    s.t.headers[s.col]
+    label(s, s.col),
+    pending(s) and " · modified" or ""
   )
   local lines = { data.clip(summary, s.width) }
   local spans = {}
@@ -125,7 +146,7 @@ local function header(s)
     for n = 1, 2 do
       local parts = {}
       for index, col in ipairs(s.visible) do
-        local text = data.wrap(s.t.headers[col], s.widths[index], 2)[n] or ""
+        local text = data.wrap(label(s, col), s.widths[index], 2)[n] or ""
         parts[#parts + 1] = text .. string.rep(" ", s.widths[index] - vim.fn.strdisplaywidth(text))
       end
       lines[n + 1] = table.concat(parts, " │ ")
@@ -206,8 +227,7 @@ local function render(s)
   elseif s.cards then
     for _, col in ipairs(s.visible) do
       targets[col] = #lines + 1
-      local label = data.wrap(s.t.headers[col], s.width)
-      for _, text in ipairs(label) do
+      for _, text in ipairs(data.wrap(label(s, col), s.width)) do
         add(text, s.row, { { col = col, start = 0, finish = #text } }, true)
       end
       for _, text in ipairs(data.wrap(s.t.rows[s.row].cells[col], s.width)) do
@@ -282,16 +302,24 @@ local function resize(s)
   render(s)
 end
 
--- Apply `change(t)` to the parsed table, then rewrite its lines in the source buffer.
--- Returns true when written, nil when refused because the source changed.
+-- Apply `change(t)` to the parsed table in memory only. The source buffer is
+-- untouched until `save`. Editing drops any active sort: the edited order is kept.
 local function write(s, change)
+  change(s.t)
+  s.sort, s.original = nil, nil
+  render(s)
+  return true
+end
+
+-- Write the staged table into the source buffer. Returns true when written, nil when
+-- refused because the source changed since the reader opened.
+local function save(s)
   local t, buf = s.t, s.source_buf
   if not api.nvim_buf_is_valid(buf) or api.nvim_buf_get_changedtick(buf) ~= s.tick then
-    notify("Source changed. Close and reopen the reader before editing.")
+    notify("Source changed. Close and reopen the reader before saving.")
     return
   end
   local old = api.nvim_buf_get_lines(buf, t.start - 1, t.finish, false)
-  change(t)
   api.nvim_buf_set_lines(buf, t.start - 1, t.finish, false, data.format(t, old))
   for _, new in ipairs(data.parse(api.nvim_buf_get_lines(buf, 0, -1, false))) do
     if new.start == t.start then
@@ -299,25 +327,21 @@ local function write(s, change)
     end
   end
   s.tick = api.nvim_buf_get_changedtick(buf)
+  s.base = contents(t)
+  s.sort, s.original = nil, nil
   render(s)
+  notify("Table saved to the source buffer.")
   return true
 end
 
 local function snapshot(s)
-  local rows = {}
-  for index, row in ipairs(s.t.rows) do
-    rows[index] = vim.deepcopy(row.cells)
-  end
-  return {
-    headers = vim.deepcopy(s.t.headers),
-    aligns = vim.deepcopy(s.t.aligns),
-    rows = rows,
+  return vim.tbl_extend("error", contents(s.t), {
     row = s.row,
     col = s.col,
     hidden = vim.deepcopy(s.hidden),
     cut = vim.deepcopy(s.cut),
     expanded = vim.deepcopy(s.expanded),
-  }
+  })
 end
 
 local function restore(s, snap)
@@ -461,6 +485,7 @@ local function show(t, source_buf, source_win)
     header_buf = scratch(),
     width = width,
     height = height,
+    base = contents(t),
   }
   highlight_markdown(s.buf)
   highlight_markdown(s.header_buf)
@@ -491,7 +516,7 @@ local function show(t, source_buf, source_win)
     col = 0,
     width = width,
     height = height,
-    footer = data.clip(" ? help · v row · Enter expand · q close ", width),
+    footer = data.clip(" ? help · v row · S-Enter expand · Enter save · q close ", width),
     footer_pos = "center",
   })
   active = s
@@ -513,6 +538,77 @@ local function show(t, source_buf, source_win)
     end
     s.col = s.visible[(index - 1 + delta) % #s.visible + 1]
     render(s)
+  end
+  local function set_sort(sort)
+    s.original = s.original or vim.list_slice(t.rows)
+    local selected = t.rows[s.row]
+    local old_index, order, position = {}, vim.list_slice(s.original), {}
+    for index, row in ipairs(t.rows) do
+      old_index[row] = index
+    end
+    for index, row in ipairs(order) do
+      position[row] = index
+    end
+    if sort then
+      table.sort(order, function(a, b)
+        local left, right = (a.cells[sort.col] or ""):lower(), (b.cells[sort.col] or ""):lower()
+        if left == right then
+          return position[a] < position[b]
+        end
+        return (left < right) ~= sort.desc
+      end)
+    end
+    local expanded = {}
+    for index, row in ipairs(order) do
+      expanded[index] = s.expanded[old_index[row]]
+      if row == selected then
+        s.row = index
+      end
+    end
+    t.rows, s.expanded, s.sort = order, expanded, sort
+    if not sort then
+      s.original = nil
+    end
+  end
+  local function confirm_save()
+    if s.confirm_win and api.nvim_win_is_valid(s.confirm_win) then
+      return
+    end
+    local text = " Save changes to the Markdown source? "
+    local cbuf = scratch()
+    api.nvim_buf_set_lines(cbuf, 0, -1, false, { text })
+    vim.bo[cbuf].modifiable = false
+    local cwin = window(cbuf, true, {
+      win = s.win,
+      row = math.max(0, math.floor(s.height / 2) - 1),
+      col = math.max(0, math.floor((s.width - #text) / 2)),
+      width = math.min(#text, s.width),
+      height = 1,
+      title = " md-table ",
+      title_pos = "center",
+      footer = " y/Enter save · q/Esc cancel ",
+      footer_pos = "center",
+    })
+    s.confirm_win = cwin
+    local function dismiss()
+      if api.nvim_win_is_valid(cwin) then
+        api.nvim_win_close(cwin, true)
+      end
+      if api.nvim_win_is_valid(s.win) then
+        api.nvim_set_current_win(s.win)
+      end
+    end
+    local function accept()
+      dismiss()
+      save(s)
+    end
+    local opts = { buffer = cbuf, silent = true, nowait = true }
+    for _, key in ipairs({ "y", "<CR>" }) do
+      vim.keymap.set("n", key, accept, vim.tbl_extend("force", opts, { desc = "Save changes to the source" }))
+    end
+    for _, key in ipairs({ "q", "<Esc>" }) do
+      vim.keymap.set("n", key, dismiss, vim.tbl_extend("force", opts, { desc = "Keep changes unsaved" }))
+    end
   end
   local actions = {}
   function actions.close()
@@ -586,8 +682,29 @@ local function show(t, source_buf, source_win)
     render(s)
   end
   function actions.reset()
+    if s.sort then
+      set_sort(nil)
+    end
     s.hidden, s.cut, s.expanded, s.full, s.mode = {}, {}, {}, config.auto_expand == true, "table"
     render(s)
+  end
+  function actions.sort_col()
+    local sort = s.sort
+    if not sort or sort.col ~= s.col then
+      set_sort({ col = s.col, desc = false })
+    elseif not sort.desc then
+      set_sort({ col = s.col, desc = true })
+    else
+      set_sort(nil)
+    end
+    render(s)
+  end
+  function actions.save_prompt()
+    if not pending(s) then
+      notify("No changes to save.")
+      return
+    end
+    confirm_save()
   end
   function actions.yank()
     if t.rows[s.row] then
@@ -608,7 +725,10 @@ local function show(t, source_buf, source_win)
     close(s)
     if api.nvim_win_is_valid(source_win) then
       api.nvim_set_current_win(source_win)
-      api.nvim_win_set_cursor(source_win, { row and row.line or t.start, row and row.starts[s.col] or 0 })
+      api.nvim_win_set_cursor(
+        source_win,
+        { row and row.line or t.start, row and row.starts and row.starts[s.col] or 0 }
+      )
     end
   end
   local function edit(header)
@@ -636,7 +756,7 @@ local function show(t, source_buf, source_win)
       height = math.max(1, math.min(8, s.height - 2)),
       title = header and " Edit header " or " Edit: " .. t.headers[s.col] .. " ",
       title_pos = "center",
-      footer = " <CR>/:w save · q cancel ",
+      footer = " <CR>/:w apply · q cancel ",
       footer_pos = "center",
     })
     s.edit_win = ewin
@@ -700,15 +820,17 @@ local function show(t, source_buf, source_win)
   function actions.help()
     vim.ui.select({
       "j/k: next/previous row (counts work); h/l or Tab: select column",
-      "Enter: expand/collapse selected row; w: full wrap for all rows",
+      "Shift-Enter: expand/collapse selected row; w: full wrap for all rows",
       "c: one-line cutoff for selected column; x: hide column; s: restore column",
       "f: focus selected + first column; S: show all columns; R: reset layout",
+      "<localleader>s: sort selected column ascending/descending/off",
+      "Enter: save pending edits and sort to the source buffer (asks first); closing discards them",
       "o/O: insert row below/above; i/a/I/A: insert column before/after/at start/at end",
       "dd: delete row; D: delete column; u/Ctrl-r: undo/redo table changes",
       "v: full-width row reader; Ctrl-d/Ctrl-u: scroll long content",
       "/: search visible text; use w or v to expose truncated text first",
       "y: yank complete source cell (registers supported); g: jump to source",
-      "e: edit selected cell; E: edit column header (Enter or :w saves to source buffer, q cancels)",
+      "e: edit selected cell; E: edit column header (Enter or :w applies to the reader, q cancels)",
       "q/Esc: close; reopen to refresh",
     }, { prompt = "md-table · keys" }, function() end)
   end
@@ -718,7 +840,9 @@ local function show(t, source_buf, source_win)
   map({ "h", "<Left>", "<S-Tab>" }, "Previous column", actions.prev_col)
   map({ "l", "<Right>", "<Tab>" }, "Next column", actions.next_col)
   map("v", "Toggle full-width row reader", actions.toggle_row_mode)
-  map("<CR>", "Expand/collapse this row", actions.toggle_expand)
+  map("<S-CR>", "Expand/collapse this row", actions.toggle_expand)
+  map("<CR>", "Save pending changes to the source buffer", actions.save_prompt)
+  map("<localleader>s", "Sort by this column (ascending/descending/off)", actions.sort_col)
   map("w", "Toggle full wrapping for all rows", actions.toggle_wrap)
   map("c", "Toggle one-line cutoff for this column", actions.toggle_cut)
   map("x", "Hide this column", actions.hide_col)

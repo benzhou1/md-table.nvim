@@ -15,7 +15,11 @@ KEYS                                                       *md-table-keys*
 
 j / k, Down / Up          Next / previous record. Counts such as 3j work.
 h / l, Shift-Tab / Tab    Select previous / next column.
-<Enter>                   Expand / collapse the current row.
+<S-Enter>                 Expand / collapse the current row. Needs a terminal that
+                          reports Shift-Enter (kitty keyboard protocol or CSI u).
+<Enter>                   Save pending edits and sort to the source buffer after
+                          a confirmation (y or <Enter> saves; q or <Esc> cancels).
+<localleader>s            Sort by the selected column: ascending, descending, off.
 w                         Toggle unrestricted wrapping for all rows.
 c                         Toggle one-line cutoff for the selected column.
 x                         Hide selected column; at least one remains visible.
@@ -34,8 +38,10 @@ q / <Esc>                 Close the reader.
 Expanded rows override column cutoffs. Row view never truncates visible fields.
 Search covers rendered text: use a then w to expose all table text. In row view,
 search covers the current record. Layout choices last for one reader session.
-Reopen after editing the source; stale source jumps are refused. The reader never
-changes Markdown, its modified flag, or its undo history.
+Reopen after editing the source; stale source jumps are refused. Edits and sorting
+are held in the reader and the header shows "modified". Nothing reaches the source
+buffer until <Enter> is confirmed; closing the reader discards pending changes.
+Confirming writes the buffer only; save the file yourself.
 
 INSTALLATION                                            *md-table-install*
 

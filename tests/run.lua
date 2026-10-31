@@ -157,9 +157,9 @@ local ok, err = xpcall(function()
   fits()
   key("y")
   eq(vim.fn.getreg('"'), row.cells[2], "complete selected cell copied")
-  key("<CR>")
+  key("<S-CR>")
   local expanded_lines = api.nvim_buf_line_count(reader)
-  key("<CR>")
+  key("<S-CR>")
   assert(api.nvim_buf_line_count(reader) < expanded_lines, "row collapses")
   key("w")
   assert(not text():find("…", 1, true), "full wrapping has no truncation")
@@ -225,6 +225,84 @@ local ok, err = xpcall(function()
   eq(api.nvim_get_current_win(), reader_win, "stale source jump rejected")
   key("q")
   eq(#api.nvim_tabpage_list_wins(0), 1)
+
+  -- Sorting and staged edits: nothing reaches the source until the save is confirmed.
+  api.nvim_buf_set_lines(
+    src,
+    0,
+    -1,
+    false,
+    { "| name | n |", "| --- | --- |", "| pear | 1 |", "| Apple | 2 |", "| fig | 3 |" }
+  )
+  api.nvim_win_set_cursor(source_win, { 3, 0 })
+  vim.cmd.MdTable()
+  reader, reader_win = api.nvim_get_current_buf(), api.nvim_get_current_win()
+  local function press(buf, lhs)
+    for _, mapping in ipairs(api.nvim_buf_get_keymap(buf, "n")) do
+      if mapping.lhs == lhs then
+        mapping.callback()
+        return
+      end
+    end
+    error("Missing mapping " .. lhs)
+  end
+  local function header_text()
+    for _, win in ipairs(api.nvim_tabpage_list_wins(0)) do
+      local buf = api.nvim_win_get_buf(win)
+      if buf ~= reader and vim.bo[buf].filetype == "mdtable" then
+        return table.concat(api.nvim_buf_get_lines(buf, 0, -1, false), "\n")
+      end
+    end
+  end
+  local function before(first, second)
+    return text():find(first, 1, true) < text():find(second, 1, true)
+  end
+  local function indicator(arrow)
+    return header_text():find(arrow, 1, true) ~= nil
+  end
+  local staged = api.nvim_buf_get_lines(src, 0, -1, false)
+  local staged_tick = api.nvim_buf_get_changedtick(src)
+  key("\\s")
+  assert(before("Apple", "fig") and before("fig", "pear"), "ascending sort ignores case")
+  assert(indicator("▲") and not indicator("▼"), "ascending indicator")
+  key("\\s")
+  assert(before("pear", "fig") and before("fig", "Apple"), "descending sort")
+  assert(indicator("▼") and not indicator("▲"), "descending indicator")
+  key("\\s")
+  assert(before("pear", "Apple") and before("Apple", "fig"), "sort off restores source order")
+  assert(not indicator("▲") and not indicator("▼"), "sort off clears indicator")
+  key("<CR>")
+  eq(api.nvim_get_current_buf(), reader, "no confirmation without changes")
+  key("\\s")
+  eq(api.nvim_buf_get_lines(src, 0, -1, false), staged, "sorting leaves the source untouched")
+  key("<CR>")
+  local dialog = api.nvim_get_current_buf()
+  assert(dialog ~= reader, "confirmation opens for a sorted table")
+  press(dialog, "q")
+  eq(api.nvim_get_current_buf(), reader, "cancel returns to the reader")
+  eq(api.nvim_buf_get_lines(src, 0, -1, false), staged, "cancel leaves the source untouched")
+  assert(indicator("▲"), "cancel keeps the sort")
+  key("<CR>")
+  press(api.nvim_get_current_buf(), "y")
+  local saved = api.nvim_buf_get_lines(src, 0, -1, false)
+  assert(
+    saved[3]:find("Apple", 1, true) and saved[4]:find("fig", 1, true) and saved[5]:find("pear", 1, true),
+    "sorted rows saved"
+  )
+  assert(not indicator("▲"), "save clears the sort indicator")
+  key("<CR>")
+  eq(api.nvim_get_current_buf(), reader, "nothing pending after save")
+  staged, staged_tick = saved, api.nvim_buf_get_changedtick(src)
+  key("o")
+  eq(api.nvim_buf_get_changedtick(src), staged_tick, "insert is staged, not written")
+  assert(header_text():find("modified", 1, true), "pending changes are flagged")
+  key("u")
+  key("<CR>")
+  eq(api.nvim_get_current_buf(), reader, "undoing every change leaves nothing pending")
+  key("o")
+  key("q")
+  eq(api.nvim_buf_get_lines(src, 0, -1, false), staged, "closing discards pending changes")
+  eq(#api.nvim_tabpage_list_wins(0), 1, "reader closed")
 
   api.nvim_buf_set_lines(src, 0, -1, false, { "| empty | table |", "| - | - |" })
   vim.o.columns = 22
