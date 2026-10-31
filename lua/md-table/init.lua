@@ -41,11 +41,23 @@ local function scratch()
   return buf
 end
 
+local function highlight_markdown(buf)
+  vim.treesitter.language.register("markdown_inline", "mdtable")
+  pcall(vim.treesitter.start, buf, "markdown_inline")
+end
+
 local function window(buf, enter, config)
   config.relative, config.style, config.border = "win", "minimal", "rounded"
   config.zindex = 50
   local win = api.nvim_open_win(buf, enter, config)
-  for key, value in pairs({ wrap = false, cursorline = false, scrolloff = 0, sidescrolloff = 0, winblend = 0 }) do
+  for key, value in pairs({
+    wrap = false,
+    cursorline = false,
+    scrolloff = 0,
+    sidescrolloff = 0,
+    winblend = 0,
+    conceallevel = 0,
+  }) do
     vim.wo[win][key] = value
   end
   vim.wo[win].winhighlight = table.concat({
@@ -450,6 +462,8 @@ local function show(t, source_buf, source_win)
     width = width,
     height = height,
   }
+  highlight_markdown(s.buf)
+  highlight_markdown(s.header_buf)
   local cursor = api.nvim_win_get_cursor(source_win)
   for index, row in ipairs(t.rows) do
     if row.line == cursor[1] then
@@ -613,6 +627,7 @@ local function show(t, source_buf, source_win)
     local text = vim.split(data.text(raw), "\n", { plain = true })
     api.nvim_buf_set_lines(ebuf, 0, -1, false, text)
     vim.bo[ebuf].modified = false
+    highlight_markdown(ebuf)
     local ewin = window(ebuf, true, {
       win = s.win,
       row = 2,
