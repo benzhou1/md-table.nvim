@@ -304,6 +304,76 @@ local ok, err = xpcall(function()
   eq(api.nvim_buf_get_lines(src, 0, -1, false), staged, "closing discards pending changes")
   eq(#api.nvim_tabpage_list_wins(0), 1, "reader closed")
 
+  -- The on_edit hook gets the column name and the edit buffer.
+  local md_table = require("md-table")
+  local function reopen(opts)
+    api.nvim_set_current_win(source_win)
+    api.nvim_win_set_cursor(source_win, { 3, 0 })
+    md_table.open(opts)
+    reader, reader_win = api.nvim_get_current_buf(), api.nvim_get_current_win()
+  end
+  local function edit_and_cancel(lhs)
+    key(lhs)
+    api.nvim_win_close(0, true)
+    api.nvim_set_current_win(reader_win)
+  end
+  local calls = {}
+  reopen({
+    on_edit = function(column, buf, ctx)
+      calls[#calls + 1] = { column = column, buf = buf, ctx = ctx, current = api.nvim_get_current_buf() }
+    end,
+  })
+  edit_and_cancel("e")
+  eq(#calls, 1, "hook fires for a cell edit")
+  eq(calls[1].column, "name", "hook gets the column name")
+  assert(calls[1].buf ~= reader and calls[1].buf == calls[1].current, "hook gets the edit buffer")
+  eq(calls[1].ctx.header, false, "cell edit is not a header edit")
+  eq(calls[1].ctx.row, 1, "hook gets the edited row")
+  eq(calls[1].ctx.source_buf, src, "hook gets the source buffer")
+  edit_and_cancel("E")
+  eq(#calls, 2, "hook fires for a header edit")
+  eq(calls[2].ctx.header, true, "header edit is flagged")
+  eq(calls[2].ctx.row, nil, "header edit has no row")
+  key("q")
+
+  local default_calls, override_calls = 0, 0
+  md_table.setup({
+    on_edit = function()
+      default_calls = default_calls + 1
+    end,
+  })
+  reopen()
+  edit_and_cancel("e")
+  eq(default_calls, 1, "setup hook is the default")
+  key("q")
+  reopen({
+    on_edit = function()
+      override_calls = override_calls + 1
+    end,
+  })
+  edit_and_cancel("e")
+  eq({ default_calls, override_calls }, { 1, 1 }, "open() hook wins over the setup hook")
+  key("q")
+  md_table.setup()
+
+  reopen({
+    on_edit = function()
+      error("boom")
+    end,
+  })
+  key("e")
+  assert(api.nvim_get_current_buf() ~= reader, "failing hook still leaves the edit window open")
+  api.nvim_win_close(0, true)
+  api.nvim_set_current_win(reader_win)
+  key("q")
+
+  api.nvim_set_current_win(source_win)
+  api.nvim_win_set_cursor(source_win, { 3, 0 })
+  vim.cmd.MdTable()
+  eq(vim.bo[api.nvim_get_current_buf()].filetype, "mdtable", ":MdTable still opens the reader")
+  reader = api.nvim_get_current_buf()
+  key("q")
+
   api.nvim_buf_set_lines(src, 0, -1, false, { "| empty | table |", "| - | - |" })
   vim.o.columns = 22
   vim.cmd.redraw()

@@ -45,6 +45,26 @@ visible. Cells start with three-line previews; narrow windows use row view.
 Reopen after source edits. `/` searches visible text; `a` then `w` exposes the
 whole table. Details: `:help md-table`.
 
+## Hooks
+
+`on_edit(column, buf, ctx)` runs when a cell or header edit window opens, so you
+can attach behaviour such as a completion source for one column. `ctx` has `win`,
+`header`, `row` and `source_buf`. Pass it per use (it overrides a `setup()` default):
+
+```lua
+vim.keymap.set("n", "<leader>mt", function()
+  require("md-table").open({
+    on_edit = function(column, buf)
+      if column == "Owner" then
+        vim.b[buf].md_table_column = column -- read this from your completion setup
+      end
+    end,
+  })
+end)
+```
+
+`:MdTable` takes no hook. Details: `:help md-table-hooks`.
+
 ## Rendering and themes
 
 Works alongside [render-markdown.nvim](https://github.com/MeanderingProgrammer/render-markdown.nvim):

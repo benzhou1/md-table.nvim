@@ -43,6 +43,29 @@ are held in the reader and the header shows "modified". Nothing reaches the sour
 buffer until <Enter> is confirmed; closing the reader discards pending changes.
 Confirming writes the buffer only; save the file yourself.
 
+HOOKS                                                      *md-table-hooks*
+
+on_edit(column, buf, ctx)     Called after the cell or header edit window opens.
+                              `column` is the column's header text, `buf` the
+                              edit buffer. `ctx` has `win`, `header` (true for
+                              header edits), `row` (nil for headers) and
+                              `source_buf`. Errors in the hook are reported
+                              as a warning and never block editing.
+
+Pass it for one use only, or set a default in setup(); the open() value wins: >lua
+    require("md-table").open({
+      on_edit = function(column, buf)
+        if column == "Owner" then
+          vim.b[buf].md_table_column = column
+        end
+      end,
+    })
+    require("md-table").setup({ on_edit = function(column, buf, ctx) end })
+<
+The edit buffer has filetype `mdtable`. Tag it in the hook and have a completion
+plugin (for example a blink.cmp source `enabled` check) read the tag. `:MdTable`
+takes no hook; call open() from a mapping to use one.
+
 INSTALLATION                                            *md-table-install*
 
 Requires Neovim 0.10+. No plugin dependencies or Treesitter parser required.

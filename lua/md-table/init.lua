@@ -455,7 +455,7 @@ local function remove_col(s, at)
   end)
 end
 
-local function show(t, source_buf, source_win)
+local function show(t, source_buf, source_win, opts)
   if active then
     close(active)
   end
@@ -486,6 +486,7 @@ local function show(t, source_buf, source_win)
     width = width,
     height = height,
     base = contents(t),
+    on_edit = opts and opts.on_edit or config.on_edit,
   }
   highlight_markdown(s.buf)
   highlight_markdown(s.header_buf)
@@ -780,6 +781,18 @@ local function show(t, source_buf, source_win)
     local opts = { buffer = ebuf, silent = true, nowait = true }
     vim.keymap.set("n", "q", finish, vim.tbl_extend("force", opts, { desc = "Cancel cell edit" }))
     vim.keymap.set("n", "<CR>", "<cmd>write<cr>", vim.tbl_extend("force", opts, { desc = "Save cell edit" }))
+    if type(s.on_edit) == "function" then
+      -- A failing user hook must not leave the edit window half set up.
+      local ok, err = pcall(s.on_edit, t.headers[s.col], ebuf, {
+        win = ewin,
+        header = header,
+        row = not header and s.row or nil,
+        source_buf = source_buf,
+      })
+      if not ok then
+        vim.notify("on_edit hook failed: " .. err, vim.log.levels.WARN, { title = "md-table" })
+      end
+    end
   end
   function actions.edit_cell()
     edit(false)
@@ -911,7 +924,7 @@ local function show(t, source_buf, source_win)
   render(s)
 end
 
-function M.open()
+function M.open(opts)
   if active and api.nvim_get_current_buf() == active.buf then
     return
   end
@@ -920,14 +933,14 @@ function M.open()
   local line = api.nvim_win_get_cursor(win)[1]
   for _, t in ipairs(tables) do
     if line >= t.start and line <= t.finish then
-      show(t, buf, win)
+      show(t, buf, win, opts)
       return
     end
   end
   if #tables == 0 then
     notify("No Markdown pipe tables found in this buffer.")
   elseif #tables == 1 then
-    show(tables[1], buf, win)
+    show(tables[1], buf, win, opts)
   else
     local tick = api.nvim_buf_get_changedtick(buf)
     vim.ui.select(tables, {
@@ -937,7 +950,7 @@ function M.open()
       end,
     }, function(t)
       if t and api.nvim_buf_is_valid(buf) and api.nvim_buf_get_changedtick(buf) == tick then
-        show(t, buf, win)
+        show(t, buf, win, opts)
       end
     end)
   end
@@ -950,11 +963,9 @@ function M.setup(opts)
     group = api.nvim_create_augroup("MdTableHighlights", { clear = true }),
     callback = highlights,
   })
-  api.nvim_create_user_command(
-    "MdTable",
-    M.open,
-    { desc = "Read a Markdown table at the current window width", force = true }
-  )
+  api.nvim_create_user_command("MdTable", function()
+    M.open()
+  end, { desc = "Read a Markdown table at the current window width", force = true })
 end
 
 return M
